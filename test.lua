@@ -178,7 +178,12 @@ function KeySys.Main(config)
             Notif.New("Invalid/Expired key!", 2)
             text_box.Text = ""
         end
-    end)	
+    end)
+
+    get_key.MouseButton1Click:Connect(function()
+        setclipboard(PandaAuth:GetKey(ServiceID))
+        Notif.New("Copied!", 2)
+    end)
 Notif.new("loaded", 2)
 end
 
