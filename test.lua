@@ -166,31 +166,19 @@ function KeySys.Main(config)
 		key_system:Destroy()
 		UIMade = false
 	end
-	
-	close_btn.MouseButton1Click:Connect(CloseGUI)
-		
-	       local keyValid = function()
-		PandaAuth:ValidateKey(text_box.Text)
-			if keyValid then
-				if writefile then
-					writefile(config.HubName.. " Key.txt", textbox.Text)
-				end
-				Notif.New("Key is valid! Loading " .. config.HubName.. "...", 5)
-				CloseGUI()
-			else
-				Notif.New("Invalid/Expired key!", 2)
-				text_box.Text = ""
-			end
-                end
 
-		check_key.MouseButton1Click:Connect(keyValid)
-		local GetKey = function()
-		  text_box.Text = PandaAuth:GetKey(config.Service)
-			setclipboard(PandaAuth:GetKey(config.Service))
-			Notif.new("Copied URL to paste into your browser.", 2)
-	end
-    		get_key.MouseButton1Click:Connect(GetKey)
-			
+    close_btn.MouseButton1Click:Connect(CloseGUI)
+
+    check_key.MouseButton1Click:Connect(function()
+        if PandaAuth:ValidateKey(ServiceID, text_box.Text) then
+            Notif.New("Key is valid! Loading " .. config.HubName.. "...", 5)
+            CloseGUI()
+            config.NormalScript()
+        else
+            Notif.New("Invalid/Expired key!", 2)
+            text_box.Text = ""
+        end
+    end)	
 Notif.new("loaded", 2)
 end
 
