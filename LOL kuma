@@ -1,0 +1,91 @@
+repeat wait() until game:IsLoaded()
+
+-- LPH configuation
+if not LPH_OBFUSCATED then
+    LPH_NO_VIRTUALIZE = function(...) return ... end
+    LPH_NO_UPVALUES = function(...) return ... end
+    LPH_JIT_MAX = function(...) return ... end
+    LPH_JIT = function(...) return ... end
+    LPH_ENCSTR = function(...) return ... end
+    LPH_ENCNUM = function(...) return ... end
+end
+
+getgenv().isnetworkowner = isnetworkowner or function(part) return part.ReceiveAge == 0 end
+
+local clonefunction = getgenv().clonefunction or function(...)
+    return ...
+end
+
+local getService = setmetatable({}, {
+    __newindex = function()
+        while true do end
+    end,
+
+    __tostring = function()
+        while true do end
+    end,
+
+    __call = function(self, serviceName)
+        return (getgenv().cloneref or function(...) return ... end)(game.GetService(game, serviceName))
+    end
+})
+
+print('Waiting ENV')
+repeat task.wait() until getgenv().isnetworkowner ~= nil and getgenv().sethiddenproperty ~= nil
+
+game = cloneref(game)
+PLACE_ID = tonumber(game.PlaceId)
+
+if PLACE_ID ~= 15759515082 then return end
+
+local wait = clonefunction(task.wait)
+local spawn = clonefunction(task.spawn)
+----------- [[ SERVICES ]] --------------------
+local workspace = getService('Workspace')
+local playerService = getService('Players')
+local replicatedStorage = getService('ReplicatedStorage')
+local guiService = getService('GuiService')
+local virtualInputManager = getService('VirtualInputManager')
+
+------------ [[ VARIBLES ]] ------------------
+local player = getService('Players').LocalPlayer
+local playerGui = player.PlayerGui
+
+local chest = replicatedStorage:WaitForChild('Chest')
+local remotes = chest:WaitForChild('Remotes')
+
+------------ [[ Functions ]] ------------------
+local function char()
+    repeat wait() until player.Character
+    return player.Character
+end
+
+local function teleport(pos)
+    if not char() or not char():FindFirstChild('HumanoidRootPart') then return end
+    if char().Humanoid.Health <= 0 then return end
+    char().HumanoidRootPart.CFrame = pos
+end
+
+------------ [[ Init ]] ------------------
+if playerGui:FindFirstChild('LoadingGUI') ~= nil then
+    remotes.Functions.EtcFunction:InvokeServer('EnterTheGame', {})
+end
+repeat wait() until player:FindFirstChild('DataLoaded') and player['Character'] ~= nil and player.Character:IsDescendantOf(workspace.PlayerCharacters)
+
+char().Humanoid:TakeDamage(char().Humanoid.MaxHealth)
+spawn(LPH_JIT_MAX(function()
+    while wait() do
+        teleport(workspace.AllNPC['The Squid'].CFrame)
+        pcall(function()
+            repeat
+                wait()
+                replicatedStorage.Chest.Remotes.Functions.CheckQuest:InvokeServer(workspace.AllNPC['The Squid'])
+            until playerGui:FindFirstChild('The Squid')
+    
+            guiService.SelectedObject = playerGui["The Squid"].Dialogue.Accept
+            virtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+            wait(0.1)
+            virtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+        end)
+    end
+end))
