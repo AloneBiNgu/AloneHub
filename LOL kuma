@@ -46,6 +46,7 @@ local playerService = getService('Players')
 local replicatedStorage = getService('ReplicatedStorage')
 local guiService = getService('GuiService')
 local virtualInputManager = getService('VirtualInputManager')
+local userInputService = getService('UserInputService')
 
 ------------ [[ VARIBLES ]] ------------------
 local player = getService('Players').LocalPlayer
@@ -72,7 +73,9 @@ if playerGui:FindFirstChild('LoadingGUI') ~= nil then
 end
 repeat wait() until player:FindFirstChild('DataLoaded') and player['Character'] ~= nil and player.Character:IsDescendantOf(workspace.PlayerCharacters)
 
-char().Humanoid:TakeDamage(char().Humanoid.MaxHealth)
+task.delay(30, function()
+    char().Humanoid:TakeDamage(char().Humanoid.MaxHealth)
+end)
 spawn(LPH_JIT_MAX(function()
     while wait() do
         teleport(workspace.AllNPC['The Squid'].CFrame)
@@ -81,13 +84,8 @@ spawn(LPH_JIT_MAX(function()
                 wait()
                 replicatedStorage.Chest.Remotes.Functions.CheckQuest:InvokeServer(workspace.AllNPC['The Squid'])
             until playerGui:FindFirstChild('The Squid') and playerGui['The Squid']:FindFirstChild('Dialogue') and playerGui['The Squid'].Dialogue:FindFirstChild('Accept')
-    
-            guiService.SelectedObject = playerGui["The Squid"].Dialogue.Accept
-            virtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
-            wait(0.1)
-            virtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
-            guiService.SelectedObject = nil
-            return
+            
+            repeat wait() virtualInputManager:SendMouseButtonEvent(631.2, 573.6, 0, not userInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1), game, 0) until false
         end)
     end
 end))
