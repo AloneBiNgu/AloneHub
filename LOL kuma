@@ -80,12 +80,14 @@ spawn(LPH_JIT_MAX(function()
             repeat
                 wait()
                 replicatedStorage.Chest.Remotes.Functions.CheckQuest:InvokeServer(workspace.AllNPC['The Squid'])
-            until playerGui:FindFirstChild('The Squid')
+            until playerGui:FindFirstChild('The Squid') and playerGui['The Squid']:FindFirstChild('Dialogue') and playerGui['The Squid'].Dialogue:FindFirstChild('Accept')
     
             guiService.SelectedObject = playerGui["The Squid"].Dialogue.Accept
             virtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
             wait(0.1)
             virtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+            guiService.SelectedObject = nil
+            return
         end)
     end
 end))
