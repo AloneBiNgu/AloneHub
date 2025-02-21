@@ -95,6 +95,9 @@ wait(10)
 
 spawn(LPH_JIT_MAX(function()
     while wait() do
+        task.delay(10, function()
+            char().Humanoid:TakeDamage(char().Humanoid.MaxHealth)
+        end)
         teleport(workspace.AllNPC['The Squid'].CFrame)
         pcall(function()
             repeat
