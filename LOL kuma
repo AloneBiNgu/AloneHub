@@ -1,213 +1,61 @@
-getgenv().config = {
-	webhook = 'https://discord.com/api/webhooks/1340688923050901605/JOAONSRt8MG6xAC-Q2a36q664Xy8ajYY92k5v_52v8ZRIspEh28_B8K7b9OEaOwabgne',
-	['SeaMonster'] = true,
-	['GhostMonster'] = true
-}
-
-local getService = setmetatable({}, {
-	__newindex = function()
-		while true do
-		end
-	end,
-	__tostring = function()
-		while true do
-		end
-	end,
-	__call = function(self, serviceName)
-		return (function(...)
-			return ...
-		end)(game.GetService(game, serviceName))
-	end
-})
-
-local getService = setmetatable({}, {
-	__newindex = function()
-		while true do
-		end
-	end,
-	__tostring = function()
-		while true do
-		end
-	end,
-	__call = function(self, serviceName)
-		return (function(...)
-			return ...
-		end)(game.GetService(game, serviceName))
-	end
-})
-
-local wait = task.wait
-local delay = task.delay
-local spawn = task.spawn
-
-repeat
-	wait()
-until game:IsLoaded()
-
--- spawn(function()
---     loadstring(game:HttpGet('https://raw.githubusercontent.com/AloneBiNgu/AloneHub/refs/heads/main/lag'))()
--- end)
+repeat wait() until game:IsLoaded()
 
 -- LPH configuation
 if not LPH_OBFUSCATED then
-	LPH_NO_VIRTUALIZE = function(...)
-		return ...
-	end
-	LPH_JIT_MAX = function(...)
-		return ...
-	end
-	LPH_JIT = function(...)
-		return ...
-	end
-	LPH_ENCSTR = function(...)
-		return ...
-	end
-	LPH_ENCNUM = function(...)
-		return ...
-	end
+    LPH_NO_VIRTUALIZE = function(...) return ... end
+    LPH_NO_UPVALUES = function(...) return ... end
+    LPH_JIT_MAX = function(...) return ... end
+    LPH_JIT = function(...) return ... end
+    LPH_ENCSTR = function(...) return ... end
+    LPH_ENCNUM = function(...) return ... end
 end
 
--- Services
+getgenv().isnetworkowner = isnetworkowner or function(part) return part.ReceiveAge == 0 end
+
+local clonefunction = getgenv().clonefunction or function(...)
+    return ...
+end
+
+local getService = setmetatable({}, {
+    __newindex = function()
+        while true do end
+    end,
+
+    __tostring = function()
+        while true do end
+    end,
+
+    __call = function(self, serviceName)
+        return (getgenv().cloneref or function(...) return ... end)(game.GetService(game, serviceName))
+    end
+})
+
+print('Waiting ENV')
+repeat task.wait() until getgenv().isnetworkowner ~= nil and getgenv().sethiddenproperty ~= nil
+
+game = cloneref(game)
+PLACE_ID = tonumber(game.PlaceId)
+
+if PLACE_ID ~= 15759515082 then return end
+
+local wait = clonefunction(task.wait)
+local spawn = clonefunction(task.spawn)
+----------- [[ SERVICES ]] --------------------
 local workspace = getService('Workspace')
+local playerService = getService('Players')
 local replicatedStorage = getService('ReplicatedStorage')
-local httpService = getService('HttpService')
+local guiService = getService('GuiService')
 local virtualInputManager = getService('VirtualInputManager')
-local virtualUser = getService('VirtualUser')
-local teleportService = getService('TeleportService')
-local runService = getService('RunService')
 local userInputService = getService('UserInputService')
 
--- Varibles
+------------ [[ VARIBLES ]] ------------------
 local player = getService('Players').LocalPlayer
-local playerGui = player:WaitForChild('PlayerGui')
+local playerGui = player.PlayerGui
 
--- Folders
 local chest = replicatedStorage:WaitForChild('Chest')
 local remotes = chest:WaitForChild('Remotes')
-local modules = chest:WaitForChild('Modules')
-local allNpc = workspace:WaitForChild('AllNPC')
-local npcs = replicatedStorage:WaitForChild('NPC')
-local monster = workspace:WaitForChild('Monster')
-local boss = monster:WaitForChild('Boss')
-local mon = monster:WaitForChild('Mon')
-local mob = replicatedStorage:WaitForChild('MOB')
 
--- Varibles
-local _ENVPLR = getsenv(player.PlayerScripts.Services.LocalScript)._G
-local SpecialBoss = {
-	['SeaMonster'] = LPH_JIT_MAX(function()
-		return workspace.SeaMonster:GetChildren()
-	end),
-	['GhostMonster'] = LPH_JIT_MAX(function()
-		return workspace.GhostMonster:GetChildren()
-	end)
-}
-
-function SaveSetting()
-	pcall(function()
-		local JSON
-		JSON = httpService:JSONEncode(_G.ServerLog or {})
-		writefile('s.json', JSON)
-	end)
-end
-
-function LoadSetting()
-	local s, tbl = pcall(function()
-		local JSON
-		if isfile('s.json') then
-			JSON =  httpService:JSONDecode(readfile('s.json'))
-		else
-			return {}
-		end
-		return JSON or {}
-	end)
-	if s then
-		return tbl
-	end
-end
-
-local function hopServer()
-    local ServerLists = replicatedStorage.Chest.Remotes.Functions.GetServers:InvokeServer()
-    
-    local spawnTimes = {3600, math.random(3600, 7200), 3600} -- 1 tiếng, 1-2 tiếng, 1 tiếng
-    local specialSpawnTime = 14400  -- 4 giờ = 14400 giây (Mob đặc biệt xuất hiện sau mỗi 3 con thường)
-
-    -- Hàm tính thời gian spawn tiếp theo
-    local function nextSpawnTime(uptime, intervals)
-        local minTime = math.huge
-        for _, interval in ipairs(intervals) do
-            local timeToNextSpawn = interval - (uptime % interval)
-            if timeToNextSpawn < minTime then
-                minTime = timeToNextSpawn
-            end
-        end
-        return minTime
-    end
-
-    -- Lưu danh sách server hợp lệ
-    local specialServers = {}  -- Danh sách server spawn Mob Đặc Biệt
-    local normalServers = {}   -- Danh sách server spawn mob thường
-
-    for i, v in next, ServerLists do
-        if i ~= game.JobId and tonumber(v.GetPlayers) ~= 12 then
-            local uptime = os.time() - v.ServerOsTime
-            local timeUntilSpawn = nextSpawnTime(uptime, spawnTimes)
-
-            -- Xác định liệu server có sắp spawn Mob Đặc Biệt hay không
-			local checkTime = (uptime % specialSpawnTime)
-            local isSpecialMobSpawning = (checkTime >= 10800)  -- Nếu uptime >= 3h trong chu kỳ 4h
-
-            -- Nếu server chuẩn bị spawn Mob Đặc Biệt, ưu tiên
-            if isSpecialMobSpawning then
-                table.insert(specialServers, { server = v, spawnTime = timeUntilSpawn })
-            elseif uptime >= 2700 and uptime <= 3600 then
-                table.insert(normalServers, { server = v, spawnTime = timeUntilSpawn })
-            end
-        end
-    end
-
-    -- Sắp xếp danh sách:
-    -- - Server spawn Mob Đặc Biệt được ưu tiên trước.
-    -- - Nếu không có Mob Đặc Biệt, chọn server có spawn gần nhất.
-    table.sort(specialServers, function(a, b) return a.spawnTime < b.spawnTime end)
-    table.sort(normalServers, function(a, b) return a.spawnTime < b.spawnTime end)
-
-    -- Gộp danh sách, ưu tiên Mob Đặc Biệt trước
-    local sortedServers = {}
-    for _, entry in ipairs(specialServers) do table.insert(sortedServers, entry) end
-    for _, entry in ipairs(normalServers) do table.insert(sortedServers, entry) end
-
-    -- Vét cạn danh sách server để tìm server phù hợp
-    for _, entry in ipairs(sortedServers) do
-        local serverData = entry.server
-        local serverId = serverData.JobId
-
-        -- Kiểm tra tránh trùng lặp
-        if not _G.ServerLog[serverId] or tick() - _G.ServerLog[serverId].Time > 30 then
-            _G.ServerLog[serverId] = { Time = tick() }
-            SaveSetting()
-            print("Teleporting to server:", serverId, " | Mob đặc biệt:", (specialServers[1] and serverId == specialServers[1].server.JobId))
-
-            local success, err = pcall(function()
-                teleportService:TeleportToPlaceInstance(game.PlaceId, serverId)
-            end)
-
-            -- Nếu teleport thành công, thoát khỏi vòng lặp
-            if success then
-                wait(1)
-            else
-                print("Failed to teleport:", err)
-            end
-        elseif _G.ServerLog[serverId] and tick() - _G.ServerLog[serverId].Time > 30 then
-            _G.ServerLog[serverId] = nil
-        end
-    end
-    
-    -- Nếu không teleport được, tiếp tục tìm server khác
-    wait(2)
-    hopServer()
-end
-
+------------ [[ Functions ]] ------------------
 local function char()
 	repeat
 		wait()
@@ -231,310 +79,39 @@ local function char()
 end
 
 local function teleport(pos)
-	if not char() or not char():FindFirstChild('HumanoidRootPart') then
-		return
-	end
-	if char().Humanoid.Health <= 0 then
-		return
-	end
-	char().HumanoidRootPart.CFrame = pos
+    if not char() or not char():FindFirstChild('HumanoidRootPart') then return end
+    if char().Humanoid.Health <= 0 then return end
+    char().HumanoidRootPart.CFrame = pos
 end
 
-local function above(pos)
-	return CFrame.new(pos.Position) * CFrame.Angles(math.rad(-90), 0, 0)
-end
-
-local function equipTool()
-	wait(0.25)
-	for i, v in next, player.Backpack:GetChildren() do
-		if v.ToolTip == 'Sword' then
-			char().Humanoid:EquipTool(v)
-			break
-		end
-	end
-end
-
-local pressButton = LPH_NO_VIRTUALIZE(function(b, c)
-	virtualInputManager:SendKeyEvent(true, b, false, game)
-	wait(c or 0)
-	virtualInputManager:SendKeyEvent(false, b, false, game)
-end)
-
-local function useSkills(hold)
-	do
-		for i, v in next, {
-			'Z',
-			'X',
-			'C',
-			'V',
-			'B'
-		} do
-			spawn(pressButton, v, 0)
-		end
-	end
-end
-
-local click = LPH_NO_VIRTUALIZE(function()
-	virtualInputManager:SendKeyEvent(true, Enum.KeyCode.ButtonR2, false, game)
-	wait(0)
-	virtualInputManager:SendKeyEvent(false, Enum.KeyCode.ButtonR2, false, game)
-end)
-
-local function createMessage(message)
-	local ScreenGui = Instance.new('ScreenGui')
-	local TextLabel = Instance.new('TextLabel')
-
-	-- Set up the ScreenGui
-	ScreenGui.Parent = cloneref(game.CoreGui)
-
-	-- Set up the TextLabel
-	TextLabel.Parent = ScreenGui
-	TextLabel.Size = UDim2.new(1, 0, 1, 0) -- Full screen
-	TextLabel.Position = UDim2.new(0, 0, 0, 0)
-	TextLabel.BackgroundTransparency = 0.5 -- Transparency (1 is fully invisible, 0 is fully visible)
-	TextLabel.BackgroundColor3 = Color3.fromRGB(128, 128, 128) -- Gray background
-	TextLabel.Text = message
-	TextLabel.TextSize = 50
-	TextLabel.TextColor3 = Color3.fromRGB(255, 255, 255) -- White text
-	TextLabel.TextStrokeTransparency = 0.5 -- Light stroke for visibility
-	TextLabel.Font = Enum.Font.SourceSansBold
-	TextLabel.TextWrapped = true -- Wraps text inside the label
-	local functions = {}
-	function functions:ChangeMessage(newMessage)
-		TextLabel.Text = newMessage
-	end
-	return functions
-end
-
-local function createFPSLabel()
-	-- Tạo ScreenGui
-	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "CustomGui"
-	screenGui.Parent = game.CoreGui
-	screenGui.ResetOnSpawn = false
-
-	-- Tạo TextLabel
-	local textLabel = Instance.new("TextLabel")
-	textLabel.Parent = screenGui
-	textLabel.Name = "TopRightText"
-	textLabel.Text = "Hello, Roblox!"
-	textLabel.TextColor3 = Color3.new(1, 1, 1) -- Màu trắng
-	textLabel.BackgroundColor3 = Color3.new(0, 0, 0) -- Màu nền đen
-	textLabel.BackgroundTransparency = 0.5 -- Độ trong suốt nền
-	textLabel.Font = Enum.Font.SourceSans
-	textLabel.TextSize = 24
-	textLabel.Size = UDim2.new(0.2, 0, 0.05, 0) -- Chiếm 20% màn hình theo chiều ngang, 5% theo chiều dọc
-	textLabel.Position = UDim2.new(0.8, 0, 0.02, 0) -- Căn **góc trên bên phải** màn hình
-
-	textLabel.TextXAlignment = Enum.TextXAlignment.Right -- Canh phải nội dung
-	textLabel.TextYAlignment = Enum.TextYAlignment.Center
-	textLabel.BorderSizePixel = 0 -- Bỏ viền
-
-	local functions = {}
-	function functions:Change(message)
-		textLabel.Text = message
-	end
-
-	return functions
-end
-
-local function sendWebhook(url, itemName)
-	local headers = {
-		['Content-Type'] = 'application/json'
-	}
-	local data = {
-		['content'] = ('**Item Found!** 🎁\n*%s* <:C_:1321937709438337054>\n<:D_:1321936792848695428><:D_:1321936792848695428><:D_:1321936792848695428><:D_:1321936792848695428><:D_:1321936792848695428><:D_:1321936792848695428><:D_:1321936792848695428><:D_:1321936792848695428>'):format(itemName)
-	}
-	local body = httpService:JSONEncode(data)
-	local response = request({
-		Url = url,
-		Method = 'POST',
-		Headers = headers,
-		Body = body
-	})
-	print('[WEBHOOK] Item notification sent')
-end
-
-local function time_to_seconds(time_str)
-	local h, m, s = time_str:match('(%d+):(%d+):(%d+)')
-	return tonumber(h) * 3600 + tonumber(m) * 60 + tonumber(s)
-end
-
-local function is_time_within_limit(time_str)
-	if type(time_str) ~= 'string' then
-		return false
-	end
-	if not string.find(time_str, ':') then
-		return nil
-	end
-	local limit_seconds = time_to_seconds('00:06:30')
-	local time_seconds = time_to_seconds(time_str)
-	return time_seconds <= limit_seconds
-end
-
-local function collectChest()
-	local foundChest = false
-	for i, v in next, workspace:GetChildren() do
-		if v:IsA('Model') and not getService('Players'):FindFirstChild(v.Name) then
-			foundChest = true
-			teleport(v:GetModelCFrame())
-			wait(1)
-		end
-	end
-
-	local chestSpawner = workspace.Island:FindFirstChild('ChestSpawner', true) or workspace.Island:FindFirstChild('HydraStand', true)
-	if chestSpawner then
-		foundChest = true
-		teleport(chestSpawner.CFrame)
-		wait(1)
-	end
-
-	return foundChest
-end
-
-local function attackMob(mob)
-	repeat
-		wait()
-		pcall(function()
-			spawn(equipTool)
-			spawn(useSkills)
-			spawn(click)
-			if mob:FindFirstChild('Hitbox') then
-				teleport(above(mob.Hitbox.CFrame * CFrame.new(0, -10, 0)))
-			else
-				teleport(above(mob:GetModelCFrame() * CFrame.new(0, -10, 0)))
-			end
-		end)
-	until not mob or not mob:FindFirstChild('HumanoidRootPart') or not mob:FindFirstChild('Humanoid') or mob.Humanoid.Health <= 0
-end
-
-local getClientFPS=LPH_NO_VIRTUALIZE(function(b)return math.floor(1/b)end)
--- Init
-if not getgenv().config then
-	getgenv().config = {
-		webhook = '',
-		['SeaMonster'] = true,
-		['GhostMonster'] = true
-	}
-end
-
-repeat
-	wait()
-until player ~= nil
-_G.ServerLog = LoadSetting() or {}
+------------ [[ Init ]] ------------------
 if playerGui:FindFirstChild('LoadingGUI') ~= nil then
-	remotes.Functions.EtcFunction:InvokeServer('EnterTheGame', {})
+    remotes.Functions.EtcFunction:InvokeServer('EnterTheGame', {})
 end
-repeat
-	wait()
-until player:FindFirstChild('DataLoaded') and player['Character'] ~= nil and player.Character:IsDescendantOf(workspace.PlayerCharacters)
+repeat wait() until player:FindFirstChild('DataLoaded') and player['Character'] ~= nil and player.Character:IsDescendantOf(workspace.PlayerCharacters)
 
-delay(30, LPH_NO_VIRTUALIZE(function()
-	char().Head:Destroy()
-end))
-
--- FFlags and hidden property configuration
-if setfflag then
-	setfflag('HumanoidParallelRemoveNoPhysics', 'False')
-	setfflag('HumanoidParallelRemoveNoPhysicsNoSimulate2', 'False')
-end
-
-local fps = createFPSLabel()
-fps:Change(getClientFPS(runService.RenderStepped:Wait()))
-
-local delayTime = 0
-runService.RenderStepped:Connect(function(deltaTime)
-	char().Humanoid:ChangeState(11)
-	for i, v in next, char():GetDescendants() do
-		if v:IsA('BasePart') then
-			v.CanCollide = false
-		end
-	end
-	if not char().HumanoidRootPart:FindFirstChild('jacky') then
-		local bv = Instance.new('BodyVelocity')
-		bv.Parent = char().HumanoidRootPart
-		bv.Name = 'jacky'
-		bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-		bv.Velocity = Vector3.new(0, 0, 0)
-		bv = nil
-	end
-
-	if os.time() - delayTime >= 0.25 then
-		delayTime = os.time()
-		fps:Change(getClientFPS(deltaTime))
-	end
-end)
-
-local oldInventory = httpService:JSONDecode(player.PlayerStats.Material.Value)
-local messageInstance = createMessage('Waiting ...')
-if is_time_within_limit(replicatedStorage:GetAttribute('GhostShipSpawnText')) == false and is_time_within_limit(replicatedStorage:GetAttribute('SeaMonsterSpawnText')) == false and not replicatedStorage:GetAttribute('Hydra') then
-	messageInstance:ChangeMessage('Finding new server ...')
-	hopServer()
-	return
-end
+char().Humanoid:TakeDamage(char().Humanoid.MaxHealth)
+wait(10)
 
 spawn(LPH_JIT_MAX(function()
-	while wait() do
-		local foundChest = nil
-		repeat
-			wait(1)
-			local t = (is_time_within_limit(replicatedStorage:GetAttribute('GhostShipSpawnText')) and replicatedStorage:GetAttribute('GhostShipSpawnText')) or replicatedStorage:GetAttribute('SeaMonsterSpawnText')
-			messageInstance:ChangeMessage(('Sea Monster or Ghost Ship will spawn in %s'):format(t))
-			if is_time_within_limit(replicatedStorage:GetAttribute('GhostShipSpawnText')) == nil or is_time_within_limit(replicatedStorage:GetAttribute('SeaMonsterSpawnText')) == nil or replicatedStorage:GetAttribute('Hydra') then
-				messageInstance:ChangeMessage('Sea Monster or Ghost Ship spawned')
-				break
-			end
-		until false
+    while wait() do
+        task.delay(30, function()
+            char().Humanoid:TakeDamage(char().Humanoid.MaxHealth)
+        end)
+        teleport(workspace.AllNPC['The Squid'].CFrame)
+        pcall(function()
+            repeat
+                wait()
+                replicatedStorage.Chest.Remotes.Functions.CheckQuest:InvokeServer(workspace.AllNPC['The Squid'])
+            until playerGui:FindFirstChild('The Squid') and playerGui['The Squid']:FindFirstChild('Dialogue') and playerGui['The Squid'].Dialogue:FindFirstChild('Accept')
+            
+            playerGui['The Squid'].Dialogue.Accept.AnchorPoint = Vector2.new(0.5, 0.5)
+            playerGui['The Squid'].Dialogue.Accept.Size = UDim2.new(9999, 9999, 999, 9999)
 
-		spawn(function()
-			teleport((workspace.Areas:FindFirstChild("LegacyIslandArea") or workspace.Areas:FindFirstChild("HydraIslandArea")).CFrame * CFrame.new(0, 10, 0))
-		end)
-
-		wait(5)
-
-		for i, v in next, SpecialBoss do
-			if not getgenv().config[i] then
-				continue
-			end
-
-			if #v() > 0 then
-				for _, mob in next, v() do
-					messageInstance:ChangeMessage('Attacking ' .. mob.Name)
-					if string.find(mob.Name, 'Hydra') then
-						for i = 1, 4 do
-							attackMob(mob)
-							spawn(function()
-								teleport((workspace.Areas:FindFirstChild("LegacyIslandArea") or workspace.Areas:FindFirstChild("HydraIslandArea")).CFrame * CFrame.new(0, 50, 0))
-							end)
-							wait(5)
-						end
-					else
-						attackMob(mob)
-					end
-				end
-
-				wait(5)
-			end
-		end
-
-		wait(5)
-
-		if collectChest() == true then
-			foundChest = true
-			messageInstance:ChangeMessage('Collected chest')
-		end
-
-		for i, v in next, {
-			'Hydra\'s Tail',
-			'Sea King\'s Fin',
-			'Sea\'s Wraith'
-		} do
-			if _ENVPLR.CheckMaterialClient(player, v) ~= oldInventory[v] then
-				spawn(pcall, sendWebhook, getgenv().config['webhook'], v)
-			end
-		end
-		wait((foundChest == true and 10) or 0)
-		messageInstance:ChangeMessage('Finding new server ...')
-		hopServer()
-	end
+            repeat wait(1)
+                playerGui['The Squid'].Dialogue.Accept.Size = UDim2.new(9999, 9999, 999, 9999)
+                virtualInputManager:SendMouseButtonEvent(playerGui['The Squid'].AbsolutePosition.X + 200, playerGui['The Squid'].AbsolutePosition.Y + 200, 0, not game.UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1), game, 0)
+            until not playerGui['The Squid']
+        end)
+    end
 end))
