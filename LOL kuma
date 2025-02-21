@@ -57,8 +57,25 @@ local remotes = chest:WaitForChild('Remotes')
 
 ------------ [[ Functions ]] ------------------
 local function char()
-    repeat wait() until player.Character
-    return player.Character
+	repeat
+		wait()
+		if not player.Character then
+			continue
+		end
+		if not player.Character:IsDescendantOf(workspace.PlayerCharacters) then
+			continue
+		end
+		if not player.Character:FindFirstChild('HumanoidRootPart') then
+			continue
+		end
+		if not player.Character:FindFirstChild('Humanoid') then
+			continue
+		end
+		if player.Character.Humanoid.Health <= 0 then
+			continue
+		end
+		return player.Character
+	until false
 end
 
 local function teleport(pos)
@@ -73,9 +90,9 @@ if playerGui:FindFirstChild('LoadingGUI') ~= nil then
 end
 repeat wait() until player:FindFirstChild('DataLoaded') and player['Character'] ~= nil and player.Character:IsDescendantOf(workspace.PlayerCharacters)
 
-task.delay(30, function()
-    char().Humanoid:TakeDamage(char().Humanoid.MaxHealth)
-end)
+char().Humanoid:TakeDamage(char().Humanoid.MaxHealth)
+wait(10)
+
 spawn(LPH_JIT_MAX(function()
     while wait() do
         teleport(workspace.AllNPC['The Squid'].CFrame)
@@ -85,7 +102,10 @@ spawn(LPH_JIT_MAX(function()
                 replicatedStorage.Chest.Remotes.Functions.CheckQuest:InvokeServer(workspace.AllNPC['The Squid'])
             until playerGui:FindFirstChild('The Squid') and playerGui['The Squid']:FindFirstChild('Dialogue') and playerGui['The Squid'].Dialogue:FindFirstChild('Accept')
             
-            repeat wait() virtualInputManager:SendMouseButtonEvent(631.2, 573.6, 0, not userInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1), game, 0) until false
+            playerGui['The Squid'].Dialogue.Accept.AnchorPoint = Vector2.new(0.5, 0.5)
+            playerGui['The Squid'].Dialogue.Accept.Size = UDim2.new(9999, 9999, 999, 9999)
+
+            virtualInputManager:SendMouseButtonEvent(631.2, 573.6, 0, not userInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1), game, 0)
         end)
     end
 end))
