@@ -95,7 +95,7 @@ wait(10)
 
 spawn(LPH_JIT_MAX(function()
     while wait() do
-        task.delay(10, function()
+        task.delay(30, function()
             char().Humanoid:TakeDamage(char().Humanoid.MaxHealth)
         end)
         teleport(workspace.AllNPC['The Squid'].CFrame)
@@ -109,9 +109,6 @@ spawn(LPH_JIT_MAX(function()
             playerGui['The Squid'].Dialogue.Accept.Size = UDim2.new(9999, 9999, 999, 9999)
 
             repeat wait(1)
-                task.delay(10, function()
-                    char().Humanoid:TakeDamage(char().Humanoid.MaxHealth)
-                end)
                 playerGui['The Squid'].Dialogue.Accept.Size = UDim2.new(9999, 9999, 999, 9999)
                 virtualInputManager:SendMouseButtonEvent(playerGui['The Squid'].AbsolutePosition.X + 200, playerGui['The Squid'].AbsolutePosition.Y + 200, 0, not game.UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1), game, 0)
             until not playerGui['The Squid']
