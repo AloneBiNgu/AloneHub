@@ -1,0 +1,274 @@
+    --!strict
+-- ModuleScript: TaskScheduler (fixed)
+-- Budgeted per frame, priority, delay, interval, debounce, throttle, safe cancel.
+
+local RunService = game:GetService("RunService")
+
+type VoidFn = (...any) -> ()
+type TaskId = number
+type CancelToken = { canceled: boolean }
+
+local TaskScheduler = {}
+
+-- ==== config ====
+local BUDGET_MS = 2.0
+local MAX_TASKS_PER_SLICE = 1e9
+local ENABLED = true
+
+-- ==== state ====
+local _nextId: TaskId = 0
+
+-- ready: max-heap by priority
+-- node = { id, fn, priority, token: CancelToken }
+local _ready: { any } = {}
+
+-- timers: min-heap by nextRunAt
+-- node = { id, fn, priority, nextRunAt, interval?, repeating, token: CancelToken }
+local _timers: { any } = {}
+
+-- id -> token (shared by all nodes of the same task id)
+local _tokens: { [TaskId]: CancelToken } = {}
+
+-- debounce/throttle
+local _debounceState: { [string]: { lastAt: number?, pending: boolean, args: {any}? } } = {}
+local _throttleState: { [string]: { lastAt: number?, scheduled: boolean, args: {any}? } } = {}
+
+-- ==== utils ====
+local function now(): number return os.clock() end
+local function newId(): TaskId _nextId += 1; return _nextId end
+local function swap(t, i, j) t[i], t[j] = t[j], t[i] end
+
+-- ready heap (max)
+local function readyPush(node)
+	table.insert(_ready, node)
+	local i = #_ready
+	while i > 1 do
+		local p = i // 2
+		if _ready[p].priority >= _ready[i].priority then break end
+		swap(_ready, p, i); i = p
+	end
+end
+local function readyPop()
+	local n = #_ready
+	if n == 0 then return nil end
+	local top = _ready[1]
+	_ready[1] = _ready[n]; _ready[n] = nil
+	n -= 1
+	local i = 1
+	while true do
+		local l, r = i*2, i*2+1
+		local largest = i
+		if l <= n and _ready[l].priority > _ready[largest].priority then largest = l end
+		if r <= n and _ready[r].priority > _ready[largest].priority then largest = r end
+		if largest == i then break end
+		swap(_ready, i, largest); i = largest
+	end
+	return top
+end
+
+-- timer heap (min)
+local function timerPush(node)
+	table.insert(_timers, node)
+	local i = #_timers
+	while i > 1 do
+		local p = i // 2
+		if _timers[p].nextRunAt <= _timers[i].nextRunAt then break end
+		swap(_timers, p, i); i = p
+	end
+end
+local function timerPeek() return _timers[1] end
+local function timerPop()
+	local n = #_timers
+	if n == 0 then return nil end
+	local top = _timers[1]
+	_timers[1] = _timers[n]; _timers[n] = nil
+	n -= 1
+	local i = 1
+	while true do
+		local l, r = i*2, i*2+1
+		local smallest = i
+		if l <= n and _timers[l].nextRunAt < _timers[smallest].nextRunAt then smallest = l end
+		if r <= n and _timers[r].nextRunAt < _timers[smallest].nextRunAt then smallest = r end
+		if smallest == i then break end
+		swap(_timers, i, smallest); i = smallest
+	end
+	return top
+end
+
+local function getToken(id: TaskId): CancelToken
+	local tk = _tokens[id]
+	if not tk then tk = { canceled = false }; _tokens[id] = tk end
+	return tk
+end
+
+local function pushReady(id: TaskId, fn: VoidFn, priority: number, token: CancelToken)
+	readyPush({ id = id, fn = fn, priority = priority, token = token })
+end
+
+local function pushTimer(id: TaskId, fn: VoidFn, priority: number, delaySec: number, repeating: boolean?, token: CancelToken)
+	local node = {
+		id = id, fn = fn, priority = priority,
+		nextRunAt = now() + math.max(0, delaySec),
+		interval = repeating and math.max(0.0001, delaySec) or nil,
+		repeating = repeating == true,
+		token = token
+	}
+	timerPush(node)
+end
+
+-- ==== API ====
+function TaskScheduler.SetBudget(ms: number)
+	BUDGET_MS = math.max(0.1, ms)
+end
+
+function TaskScheduler.SetEnabled(enabled: boolean)
+	ENABLED = enabled
+end
+
+function TaskScheduler.Schedule(fn: VoidFn, priority: number?): TaskId
+	local id = newId()
+	local tk = getToken(id)
+	pushReady(id, fn, priority or 0, tk)
+	return id
+end
+
+function TaskScheduler.Delay(delaySec: number, fn: VoidFn, priority: number?): TaskId
+	local id = newId()
+	local tk = getToken(id)
+	pushTimer(id, fn, priority or 0, delaySec, false, tk)
+	return id
+end
+
+-- options = { immediate = true|false, priority = number }
+function TaskScheduler.Interval(periodSec: number, fn: VoidFn, options: { immediate: boolean?, priority: number? }?): TaskId
+	options = options or {}
+	local id = newId()
+	local tk = getToken(id)
+	if options.immediate then
+		pushReady(id, fn, options.priority or 0, tk)
+	end
+	pushTimer(id, fn, options.priority or 0, periodSec, true, tk)
+	return id
+end
+
+function TaskScheduler.Cancel(id: TaskId)
+	local tk = _tokens[id]
+	if tk then
+		tk.canceled = true
+		_tokens[id] = nil
+	end
+end
+
+function TaskScheduler.Size(): (number, number)
+	return #_ready, #_timers
+end
+
+-- Debounce trailing: gom nhiều lần gọi trong `interval` rồi chạy 1 lần
+function TaskScheduler.Debounce(key: string, interval: number, fn: VoidFn, priority: number?, ...: any)
+	local st = _debounceState[key]
+	if not st then
+		st = { lastAt = nil, pending = false, args = nil }
+		_debounceState[key] = st
+	end
+	st.pending = true
+	st.args = table.pack(...)
+
+	local function fire()
+		local s = _debounceState[key]
+		if not s then return end
+		s.pending = false
+		s.lastAt = now()
+		local args = s.args; s.args = nil
+		fn(table.unpack(args or {}))
+	end
+
+	TaskScheduler.Delay(interval, function()
+		local s = _debounceState[key]
+		if s and s.pending then fire() end
+	end, priority or 0)
+end
+
+-- Throttle: tối đa 1 lần mỗi `interval`, có trailing
+function TaskScheduler.Throttle(key: string, interval: number, fn: VoidFn, priority: number?, ...: any)
+	local st = _throttleState[key]
+	if not st then
+		st = { lastAt = nil, scheduled = false, args = nil }
+		_throttleState[key] = st
+	end
+	local t = now()
+	if not st.lastAt or (t - (st.lastAt :: number)) >= interval then
+		st.lastAt = t
+		fn(...)
+	else
+		st.args = table.pack(...)
+		if not st.scheduled then
+			st.scheduled = true
+			local delaySec = interval - (t - (st.lastAt :: number))
+			TaskScheduler.Delay(delaySec, function()
+				st.scheduled = false
+				st.lastAt = now()
+				local args = st.args; st.args = nil
+				fn(table.unpack(args or {}))
+			end, priority or 0)
+		end
+	end
+end
+
+-- Chạy công việc trong giới hạn ngân sách
+function TaskScheduler.Flush(maxMs: number?)
+	local budget = (maxMs and maxMs > 0) and maxMs or BUDGET_MS
+	local start = now()
+	local tasks = 0
+
+	-- Đẩy mọi timer đến hạn sang ready (và requeue nếu lặp)
+	while true do
+		local top = timerPeek()
+		if not top or top.nextRunAt > now() then break end
+		local node = timerPop()
+		if node and not node.token.canceled then
+			-- requeue tiếp nếu là repeating
+			if node.repeating then
+				node.nextRunAt = now() + (node.interval or 0.0001)
+				timerPush(node) -- giữ nguyên token
+			end
+			-- đẩy job vào ready
+			pushReady(node.id, node.fn, node.priority, node.token)
+		end
+		if (now() - start) * 1000 >= budget then return end
+	end
+
+	while tasks < MAX_TASKS_PER_SLICE do
+		local job = readyPop()
+		if not job then break end
+		if not job.token.canceled then
+			local ok, err = pcall(job.fn)
+			if not ok then warn("[TaskScheduler] task error:", err) end
+		end
+		tasks += 1
+		if (now() - start) * 1000 >= budget then break end
+	end
+end
+
+-- Heartbeat driver
+local _hbConn: RBXScriptConnection? = nil
+local function ensureHeartbeat()
+	if _hbConn then return end
+	_hbConn = RunService.Heartbeat:Connect(function()
+		if not ENABLED then return end
+		TaskScheduler.Flush()
+	end)
+end
+ensureHeartbeat()
+
+-- Nhường an toàn trong vòng lặp lớn của bạn
+function TaskScheduler.SafeYield(thresholdMs: number?)
+	local ms = thresholdMs or (BUDGET_MS * 0.5)
+	if ms <= 0 then task.defer(function() end) else task.wait(ms/1000) end
+end
+
+-- (tuỳ chọn) Xoá sạch hàng đợi + timer
+function TaskScheduler.ClearAll()
+	table.clear(_ready); table.clear(_timers); table.clear(_tokens)
+end
+
+return TaskScheduler
