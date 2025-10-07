@@ -1,0 +1,60 @@
+-- Tick.lua
+--!strict
+local Tick = {}
+Tick.__index = Tick
+
+type Job = {
+  name: string,
+  interval: number,         -- giây
+  jitterPct: number,        -- vd: 0.2 => ±20%
+  running: boolean,
+  enabled: boolean,
+  fn: (() -> (number|nil))  -- có thể return backoff giây; nil => dùng interval chuẩn
+}
+
+local function withJitter(base: number, pct: number): number
+  if pct <= 0 then return base end
+  local d = base * pct
+  return math.max(0.05, base + (math.random() * 2 * d - d))
+end
+
+local function schedule(name: string, delaySec: number, vmap, v, step)
+  task.delay(delaySec, function()
+    if vmap[name] == v then step() end
+  end)
+end
+
+function Tick.new()
+  local self = setmetatable({}, Tick)
+  self._jobs = {} :: {[string]: Job}
+  self._ver  = {} :: {[string]: number}
+  return self
+end
+
+function Tick:add(name: string, interval: number, fn: (() -> (number|nil)), jitterPct: number?)
+  self._jobs[name] = {
+    name = name, interval = interval, jitterPct = jitterPct or 0, running = false, enabled = true, fn = fn
+  }
+  self._ver[name] = (self._ver[name] or 0) + 1
+  local myv = self._ver[name]
+  local function step()
+    local j = self._jobs[name]; if not j or not j.enabled then return end
+    if j.running then
+      schedule(name, 0.25, self._ver, myv, step) -- no-overlap
+      return
+    end
+    j.running = true
+    local ok, ret = pcall(j.fn)
+    j.running = false
+    local delay = (ok and type(ret) == "number" and ret >= 0 and ret) or withJitter(j.interval, j.jitterPct)
+    schedule(name, math.max(0.05, delay), self._ver, myv, step)
+  end
+  schedule(name, withJitter(interval, jitterPct or 0), self._ver, myv, step)
+end
+
+function Tick:cancel(name: string)
+  self._jobs[name] = nil
+  self._ver[name]  = (self._ver[name] or 0) + 1
+end
+
+return Tick
