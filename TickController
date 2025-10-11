@@ -4,57 +4,172 @@ local Tick = {}
 Tick.__index = Tick
 
 type Job = {
-  name: string,
-  interval: number,         -- giây
-  jitterPct: number,        -- vd: 0.2 => ±20%
-  running: boolean,
-  enabled: boolean,
-  fn: (() -> (number|nil))  -- có thể return backoff giây; nil => dùng interval chuẩn
+	name: string,
+	interval: number,          -- giây
+	jitterPct: number,         -- vd: 0.2 => ±20%
+	running: boolean,
+	enabled: boolean,
+	fn: (() -> (number|nil)),
+	nextAt: number,            -- thời điểm (os.clock) chạy lần tới
+	version: number,           -- tăng mỗi lần add/cancel/enable/disable
 }
 
 local function withJitter(base: number, pct: number): number
-  if pct <= 0 then return base end
-  local d = base * pct
-  return math.max(0.05, base + (math.random() * 2 * d - d))
+	if pct <= 0 then return base end
+	local d = base * pct
+	return math.max(0.05, base + (math.random() * 2 * d - d))
 end
 
-local function schedule(name: string, delaySec: number, vmap, v, step)
-  task.delay(delaySec, function()
-    if vmap[name] == v then step() end
-  end)
+local function now(): number
+	return os.clock()
+end
+
+-- Hàng đợi (ưu tiên theo nextAt, nhỏ trước)
+local function queueInsert(q: { {name: string, at: number} }, item)
+	-- chèn giữ q luôn tăng dần theo at (n nhỏ, O(n) là đủ)
+	local i = #q + 1
+	q[i] = item
+	while i > 1 and q[i-1].at > q[i].at do
+		q[i-1], q[i] = q[i], q[i-1]
+		i -= 1
+	end
+end
+
+local function queuePeek(q) return q[1] end
+local function queuePop(q)
+	if #q == 0 then return nil end
+	local it = q[1]
+	table.remove(q, 1)
+	return it
 end
 
 function Tick.new()
-  local self = setmetatable({}, Tick)
-  self._jobs = {} :: {[string]: Job}
-  self._ver  = {} :: {[string]: number}
-  return self
+	local self = setmetatable({}, Tick)
+	self._jobs = {} :: {[string]: Job}
+	self._queue = {} :: { {name: string, at: number} }
+	self._runnerAlive = false
+	return self
+end
+
+-- nội bộ: lên lịch lần kế cho 1 job
+function Tick:_planNext(j: Job, delaySec: number?)
+	local d = delaySec
+	if d == nil then
+		d = withJitter(j.interval, j.jitterPct)
+	end
+	local t = math.max(0.05, d :: number)
+	j.nextAt = now() + t
+	-- Đưa vào queue (runner sẽ tự bỏ qua entry cũ nếu không khớp)
+	queueInsert(self._queue, { name = j.name, at = j.nextAt })
+	-- đảm bảo runner chạy
+	if not self._runnerAlive then
+		self:_startRunner()
+	end
+end
+
+-- nội bộ: runner toàn cục chạy tuần tự
+function Tick:_startRunner()
+	if self._runnerAlive then return end
+	self._runnerAlive = true
+
+	task.spawn(function()
+		while true do
+			-- thoát nếu không còn job hợp lệ nào
+			while #self._queue > 0 do
+				local head = queuePeek(self._queue)
+				if not head then break end
+
+				-- Đợi đến hạn
+				local tnow = now()
+				if head.at > tnow then
+					task.wait(head.at - tnow)
+				end
+
+				-- Lấy và xác nhận
+				local item = queuePop(self._queue)
+				if not item then break end
+				local j = self._jobs[item.name]
+				if not j or not j.enabled then
+					-- job bị huỷ/disable, bỏ qua
+					continue
+				end
+
+				-- Nếu entry không còn khớp nextAt hiện tại, tức đã có lịch mới → bỏ qua
+				if math.abs(item.at - j.nextAt) > 1e-6 then
+					continue
+				end
+
+				-- Chạy job (toàn cục chỉ có 1 runner, nên global-serial)
+				if j.running then
+					-- phòng thủ: nếu vì lý do gì đó đang running, dời 1 chút
+					self:_planNext(j, 0.25)
+					continue
+				end
+
+				j.running = true
+				local ok, ret = pcall(j.fn)
+				j.running = false
+
+				local delay: number? = nil
+				if ok and type(ret) == "number" and ret >= 0 then
+					delay = ret
+				end
+
+				self:_planNext(j, delay)
+			end
+
+			-- nếu hàng đợi rỗng, tắt runner
+			if #self._queue == 0 then
+				self._runnerAlive = false
+				return
+			end
+		end
+	end)
 end
 
 function Tick:add(name: string, interval: number, fn: (() -> (number|nil)), jitterPct: number?)
-  self._jobs[name] = {
-    name = name, interval = interval, jitterPct = jitterPct or 0, running = false, enabled = true, fn = fn
-  }
-  self._ver[name] = (self._ver[name] or 0) + 1
-  local myv = self._ver[name]
-  local function step()
-    local j = self._jobs[name]; if not j or not j.enabled then return end
-    if j.running then
-      schedule(name, 0.25, self._ver, myv, step) -- no-overlap
-      return
-    end
-    j.running = true
-    local ok, ret = pcall(j.fn)
-    j.running = false
-    local delay = (ok and type(ret) == "number" and ret >= 0 and ret) or withJitter(j.interval, j.jitterPct)
-    schedule(name, math.max(0.05, delay), self._ver, myv, step)
-  end
-  schedule(name, withJitter(interval, jitterPct or 0), self._ver, myv, step)
+	local j = self._jobs[name]
+	if j == nil then
+		j = {
+			name = name,
+			interval = interval,
+			jitterPct = jitterPct or 0,
+			running = false,
+			enabled = true,
+			fn = fn,
+			nextAt = 0,
+			version = 0,
+		}
+		self._jobs[name] = j
+	else
+		-- cập nhật lại cấu hình nếu add trùng tên
+		j.interval = interval
+		j.jitterPct = jitterPct or j.jitterPct
+		j.fn = fn
+		j.enabled = true
+	end
+	j.version += 1
+	self:_planNext(j, withJitter(interval, j.jitterPct))
+end
+
+function Tick:enable(name: string, on: boolean)
+	local j = self._jobs[name]
+	if not j then return end
+	if j.enabled == on then return end
+	j.enabled = on
+	j.version += 1
+	if on then
+		self:_planNext(j, withJitter(j.interval, j.jitterPct))
+	end
 end
 
 function Tick:cancel(name: string)
-  self._jobs[name] = nil
-  self._ver[name]  = (self._ver[name] or 0) + 1
+	local j = self._jobs[name]
+	if not j then return end
+	j.enabled = false
+	j.version += 1
+	self._jobs[name] = nil
+	-- Không cần dọn queue ngay: runner tự bỏ qua entry “mồ côi”
 end
 
 return Tick
