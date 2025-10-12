@@ -142,8 +142,6 @@ function Tick:_startRunner()
 					tnow = now()
 					batchCount = 0
 				end
-
-				::continue_batch::
 			end
 			-- vòng while true sẽ lặp lại; nếu còn việc, nó lại tính head và đợi tới hạn mới
 		end
