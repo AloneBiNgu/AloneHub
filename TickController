@@ -10,18 +10,24 @@ type Job = {
 	running: boolean,
 	enabled: boolean,
 	fn: (() -> (number|nil)),
-	nextAt: number,            -- thời điểm (os.clock) chạy lần tới
+	nextAt: number,            -- thời điểm (time()) chạy lần tới
 	version: number,           -- tăng mỗi lần add/cancel/enable/disable
 }
+
+-- Các thông số tinh chỉnh hiệu năng
+local SLACK = 1/5           -- gom các job đến hạn trong ~1 frame
+local MAX_BATCH = 8           -- số job tối đa xử lý liên tiếp trước khi nhường CPU
+local MIN_DELAY = 0.05        -- đảm bảo không lập lịch quá dày
 
 local function withJitter(base: number, pct: number): number
 	if pct <= 0 then return base end
 	local d = base * pct
-	return math.max(0.05, base + (math.random() * 2 * d - d))
+	return math.max(MIN_DELAY, base + (math.random() * 2 * d - d))
 end
 
 local function now(): number
-	return os.clock()
+	-- dùng wall-clock thay vì os.clock() để chờ chính xác
+	return time()
 end
 
 -- Hàng đợi (ưu tiên theo nextAt, nhỏ trước)
@@ -57,7 +63,7 @@ function Tick:_planNext(j: Job, delaySec: number?)
 	if d == nil then
 		d = withJitter(j.interval, j.jitterPct)
 	end
-	local t = math.max(0.05, d :: number)
+	local t = math.max(MIN_DELAY, d :: number)
 	j.nextAt = now() + t
 	-- Đưa vào queue (runner sẽ tự bỏ qua entry cũ nếu không khớp)
 	queueInsert(self._queue, { name = j.name, at = j.nextAt })
@@ -74,36 +80,51 @@ function Tick:_startRunner()
 
 	task.spawn(function()
 		while true do
-			-- thoát nếu không còn job hợp lệ nào
-			while #self._queue > 0 do
-				local head = queuePeek(self._queue)
-				if not head then break end
+			-- nếu hàng đợi rỗng, tắt runner
+			if #self._queue == 0 then
+				self._runnerAlive = false
+				return
+			end
 
-				-- Đợi đến hạn
-				local tnow = now()
-				if head.at > tnow then
-					task.wait(head.at - tnow)
+			local head = queuePeek(self._queue)
+			if not head then
+				task.wait()
+				continue
+			end
+
+			-- Đợi đến hạn
+			local tnow = now()
+			if head.at > tnow then
+				task.wait(head.at - tnow)
+				tnow = now() -- tính lại sau khi đợi
+			end
+
+			-- Xử lý batch: mọi job đến hạn trong [tnow, tnow + SLACK]
+			local batchCount = 0
+			while #self._queue > 0 do
+				local peeked = queuePeek(self._queue)
+				if not peeked or peeked.at > (tnow + SLACK) then
+					break
 				end
 
-				-- Lấy và xác nhận
 				local item = queuePop(self._queue)
 				if not item then break end
+
 				local j = self._jobs[item.name]
 				if not j or not j.enabled then
 					-- job bị huỷ/disable, bỏ qua
-					continue
+					goto continue_batch
 				end
 
 				-- Nếu entry không còn khớp nextAt hiện tại, tức đã có lịch mới → bỏ qua
 				if math.abs(item.at - j.nextAt) > 1e-6 then
-					continue
+					goto continue_batch
 				end
 
-				-- Chạy job (toàn cục chỉ có 1 runner, nên global-serial)
+				-- Nếu đang chạy, dời ngắn để tránh đụng mà không spam CPU
 				if j.running then
-					-- phòng thủ: nếu vì lý do gì đó đang running, dời 1 chút
-					self:_planNext(j, 0.25)
-					continue
+					self:_planNext(j, 0.02) -- 20ms
+					goto continue_batch
 				end
 
 				j.running = true
@@ -114,15 +135,19 @@ function Tick:_startRunner()
 				if ok and type(ret) == "number" and ret >= 0 then
 					delay = ret
 				end
-
 				self:_planNext(j, delay)
-			end
 
-			-- nếu hàng đợi rỗng, tắt runner
-			if #self._queue == 0 then
-				self._runnerAlive = false
-				return
+				batchCount += 1
+				if batchCount >= MAX_BATCH then
+					-- Nhường CPU sau mỗi mẻ xử lý
+					task.wait()
+					tnow = now()
+					batchCount = 0
+				end
+
+				::continue_batch::
 			end
+			-- Lặp lại: nếu còn việc, vòng trên sẽ đợi tới hạn mới
 		end
 	end)
 end
@@ -173,5 +198,3 @@ function Tick:cancel(name: string)
 end
 
 return Tick
-
-tôi muốn scheduler này mỗi 60 chạy 1 lần để cho cpu nghỉ
