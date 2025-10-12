@@ -1,5 +1,9 @@
 -- Tick.lua
 --!strict
+
+-- THAY ĐỔI 1: Thêm hằng số cho khoảng thời gian tick
+local TICK_INTERVAL = 1 -- Giây. Runner sẽ "thức dậy" mỗi giây một lần để kiểm tra các job đến hạn.
+
 local Tick = {}
 Tick.__index = Tick
 
@@ -26,7 +30,6 @@ end
 
 -- Hàng đợi (ưu tiên theo nextAt, nhỏ trước)
 local function queueInsert(q: { {name: string, at: number} }, item)
-	-- chèn giữ q luôn tăng dần theo at (n nhỏ, O(n) là đủ)
 	local i = #q + 1
 	q[i] = item
 	while i > 1 and q[i-1].at > q[i].at do
@@ -51,7 +54,6 @@ function Tick.new()
 	return self
 end
 
--- nội bộ: lên lịch lần kế cho 1 job
 function Tick:_planNext(j: Job, delaySec: number?)
 	local d = delaySec
 	if d == nil then
@@ -59,73 +61,65 @@ function Tick:_planNext(j: Job, delaySec: number?)
 	end
 	local t = math.max(0.05, d :: number)
 	j.nextAt = now() + t
-	-- Đưa vào queue (runner sẽ tự bỏ qua entry cũ nếu không khớp)
 	queueInsert(self._queue, { name = j.name, at = j.nextAt })
-	-- đảm bảo runner chạy
 	if not self._runnerAlive then
 		self:_startRunner()
 	end
 end
 
--- nội bộ: runner toàn cục chạy tuần tự
+-- THAY ĐỔI 2: Chỉnh sửa hoàn toàn logic của runner
 function Tick:_startRunner()
 	if self._runnerAlive then return end
 	self._runnerAlive = true
 
 	task.spawn(function()
-		while true do
-			-- thoát nếu không còn job hợp lệ nào
-			while #self._queue > 0 do
-				local head = queuePeek(self._queue)
-				if not head then break end
-
-				-- Đợi đến hạn
-				local tnow = now()
-				if head.at > tnow then
-					task.wait(head.at - tnow)
-				end
-
+		while #self._jobs > 0 do -- Chạy khi nào còn jobs, thay vì queue
+			local tnow = now()
+			
+			-- Chạy tất cả các job đã đến hạn trong "tick" này
+			while #self._queue > 0 and (queuePeek(self._queue).at <= tnow) do
 				-- Lấy và xác nhận
 				local item = queuePop(self._queue)
 				if not item then break end
+				
 				local j = self._jobs[item.name]
 				if not j or not j.enabled then
-					-- job bị huỷ/disable, bỏ qua
-					continue
+					continue -- job bị huỷ/disable, bỏ qua
 				end
 
 				-- Nếu entry không còn khớp nextAt hiện tại, tức đã có lịch mới → bỏ qua
 				if math.abs(item.at - j.nextAt) > 1e-6 then
 					continue
 				end
+				
+				-- Chạy job (chỉ chạy nếu nó không đang chạy)
+				if not j.running then
+					j.running = true
+					local ok, ret = pcall(j.fn)
+					j.running = false
 
-				-- Chạy job (toàn cục chỉ có 1 runner, nên global-serial)
-				if j.running then
+					local delay: number? = nil
+					if ok and type(ret) == "number" and ret >= 0 then
+						delay = ret
+					end
+					
+					-- Lên lịch lại cho lần chạy kế tiếp
+					self:_planNext(j, delay)
+				else
 					-- phòng thủ: nếu vì lý do gì đó đang running, dời 1 chút
 					self:_planNext(j, 0.25)
-					continue
 				end
-
-				j.running = true
-				local ok, ret = pcall(j.fn)
-				j.running = false
-
-				local delay: number? = nil
-				if ok and type(ret) == "number" and ret >= 0 then
-					delay = ret
-				end
-
-				self:_planNext(j, delay)
 			end
-
-			-- nếu hàng đợi rỗng, tắt runner
-			if #self._queue == 0 then
-				self._runnerAlive = false
-				return
-			end
+			
+			-- Chờ cho đến tick tiếp theo
+			task.wait(TICK_INTERVAL)
 		end
+		
+		-- Vòng lặp kết thúc, tức là không còn job nào cả
+		self._runnerAlive = false
 	end)
 end
+
 
 function Tick:add(name: string, interval: number, fn: (() -> (number|nil)), jitterPct: number?)
 	local j = self._jobs[name]
@@ -142,7 +136,6 @@ function Tick:add(name: string, interval: number, fn: (() -> (number|nil)), jitt
 		}
 		self._jobs[name] = j
 	else
-		-- cập nhật lại cấu hình nếu add trùng tên
 		j.interval = interval
 		j.jitterPct = jitterPct or j.jitterPct
 		j.fn = fn
@@ -169,7 +162,6 @@ function Tick:cancel(name: string)
 	j.enabled = false
 	j.version += 1
 	self._jobs[name] = nil
-	-- Không cần dọn queue ngay: runner tự bỏ qua entry “mồ côi”
 end
 
 return Tick
