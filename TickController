@@ -14,8 +14,8 @@ type Job = {
 }
 
 -- Tối ưu: Giảm SLACK xuống 1 frame để giảm overhead
-local SLACK = 1/60           -- ~16ms, chính xác hơn
-local MAX_BATCH = 12         -- Tăng batch size
+local SLACK = 1/10           -- ~16ms, chính xác hơn
+local MAX_BATCH = 5         -- Tăng batch size
 local MIN_DELAY = 1/60       -- Align với frame rate
 
 -- Cache math functions
