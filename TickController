@@ -1,171 +1,155 @@
--- Tick.lua (Đã sửa lỗi)
 --!strict
-local Tick = {}
-Tick.__index = Tick
+local bit = bit32
 
-type Job = {
-	name: string,
-	interval: number,
-	jitterPct: number,
-	running: boolean,
-	enabled: boolean,
-	fn: (() -> (number|nil)),
-	nextAt: number,            -- SỬA: Dùng os.clock()
-	version: number,
+local SLOT = 0.2           -- 5 FPS
+local WHEEL = 256          -- 256 ô => 51.2s mỗi vòng
+local WORDS = 2            -- 64 job tối đa (2 * 32-bit). Tăng nếu cần.
+
+-- Mỗi ô có WORDS bitset (mỗi bit là 1 job)
+local buckets = table.create(WHEEL)
+for i = 1, WHEEL do
+    local row = table.create(WORDS)
+    for w = 1, WORDS do row[w] = 0 end
+    buckets[i] = row
+end
+
+-- Job metadata: interval (ô), rounds (số vòng còn lại), enabled, running, fn
+local JOB_MAX = WORDS * 32
+local jobs = table.create(JOB_MAX)
+for id = 1, JOB_MAX do
+    jobs[id] = { interval = 0, rounds = 0, enabled = false, running = false, fn = nil }
+end
+
+-- Mapping tên -> id (1..JOB_MAX)
+local idByName : {[string]: number} = {}
+local nextId = 1
+
+local cursor = 1 -- ô hiện tại (1..WHEEL)
+
+local function wordBit(id: number)
+    local w = ((id - 1) // 32) + 1
+    local b = (id - 1) % 32
+    return w, b
+end
+
+local function scheduleAtSlot(id: number, slotIndex: number, rounds: number)
+    local j = jobs[id]
+    j.rounds = rounds
+    local row = buckets[slotIndex]
+    local w, b = wordBit(id)
+    row[w] = bit.bor(row[w], bit.lshift(1, b))
+end
+
+local function descheduleFromSlot(id: number, slotIndex: number)
+    local row = buckets[slotIndex]
+    local w, b = wordBit(id)
+    row[w] = bit.band(row[w], bit.bnot(bit.lshift(1, b)))
+end
+
+local function add(name: string, intervalSec: number, fn: (() -> (number|nil)))
+    local id = idByName[name]
+    if not id then
+        assert(nextId <= JOB_MAX, "Out of job slots")
+        id = nextId
+        nextId += 1
+        idByName[name] = id
+    end
+
+    local ticks = math.max(1, math.floor(intervalSec / SLOT + 0.5)) -- lượng tử hóa
+    local rounds = (ticks - 1) // WHEEL
+    local advance = ((ticks - 1) % WHEEL) + 1
+    local slotIndex = ((cursor - 1 + advance) % WHEEL) + 1
+
+    local j = jobs[id]
+    j.interval = ticks
+    j.enabled = true
+    j.running = false
+    j.fn = fn
+
+    scheduleAtSlot(id, slotIndex, rounds)
+end
+
+local function cancel(name: string)
+    local id = idByName[name]; if not id then return end
+    local j = jobs[id]; if not j.enabled then return end
+    j.enabled = false
+    j.fn = nil
+    -- Không cần dọn bit ngay: sẽ tự rơi khi rounds==0 & tới slot thì bỏ qua vì disabled
+end
+
+local function enable(name: string, on: boolean)
+    local id = idByName[name]; if not id then return end
+    local j = jobs[id]
+    j.enabled = on and true or false
+end
+
+-- Tính lại vị trí tương lai dựa trên interval (ticks)
+local function reschedFromCurrent(id: number)
+    local j = jobs[id]
+    local ticks = math.max(1, j.interval)
+    local rounds = (ticks - 1) // WHEEL
+    local advance = ((ticks - 1) % WHEEL) + 1
+    local slotIndex = ((cursor - 1 + advance) % WHEEL) + 1
+    scheduleAtSlot(id, slotIndex, rounds)
+end
+
+-- Runner: mỗi SLOT giây, nhảy một ô
+task.spawn(function()
+    while true do
+        task.wait(SLOT)
+        cursor = (cursor % WHEEL) + 1
+        local row = buckets[cursor]
+
+        -- Quét từng word (32 job/word)
+        for w = 1, WORDS do
+            local mask = row[w]
+            if mask ~= 0 then
+                -- Duyệt bit: vòng 0..31
+                for b = 0, 31 do
+                    local bitmask = bit.lshift(1, b)
+                    if bit.band(mask, bitmask) ~= 0 then
+                        local id = (w - 1) * 32 + (b + 1)
+                        local j = jobs[id]
+                        if j and j.enabled then
+                            if j.rounds > 0 then
+                                -- chưa tới vòng chạy, giảm rounds và giữ bit
+                                j.rounds -= 1
+                            else
+                                -- tới lượt chạy
+                                -- gỡ bit hiện tại
+                                row[w] = bit.band(row[w], bit.bnot(bitmask))
+                                -- chạy job
+                                if not j.running and j.fn then
+                                    j.running = true
+                                    local ok, backoff = pcall(j.fn)
+                                    j.running = false
+
+                                    -- tạm chọn backoff nếu có (lượng tử hóa theo SLOT)
+                                    if ok and type(backoff) == "number" and backoff >= 0 then
+                                        j.interval = math.max(1, math.floor(backoff / SLOT + 0.5))
+                                    end
+                                else
+                                    -- nếu đang running, lần sau chạy lại (không resched ở đây)
+                                end
+                                -- đặt lại lịch tương lai (nếu vẫn enabled)
+                                if j.enabled then
+                                    reschedFromCurrent(id)
+                                end
+                            end
+                        else
+                            -- disabled: gỡ bit
+                            row[w] = bit.band(row[w], bit.bnot(bitmask))
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- API export (rút gọn)
+return {
+    add = add,
+    cancel = cancel,
+    enable = enable,
 }
-
--- Các thông số tinh chỉnh hiệu năng
-local SLACK = 1/5            -- SỬA: Gom các job trong ~2 frame (33ms), hợp lý hơn
-local MAX_BATCH = 8
-local MIN_DELAY = 0.05
-
-local function withJitter(base: number, pct: number): number
-	if pct <= 0 then return base end
-	local d = base * pct
-	return math.max(MIN_DELAY, base + (math.random() * 2 * d - d))
-end
-
-local function now(): number
-	-- SỬA: Luôn dùng os.clock() để đồng bộ với task.wait()
-	return os.clock()
-end
-
--- (Các hàm queue... không thay đổi)
-local function queueInsert(q: { {name: string, at: number} }, item)
-	local i = #q + 1
-	q[i] = item
-	while i > 1 and q[i-1].at > q[i].at do
-		q[i-1], q[i] = q[i], q[i-1]
-		i -= 1
-	end
-end
-local function queuePeek(q) return q[1] end
-local function queuePop(q)
-	if #q == 0 then return nil end
-	local it = q[1]
-	table.remove(q, 1)
-	return it
-end
-
-
-function Tick.new()
-	local self = setmetatable({}, Tick)
-	self._jobs = {} :: {[string]: Job}
-	self._queue = {} :: { {name: string, at: number} }
-	self._runnerAlive = false
-	return self
-end
-
-function Tick:_planNext(j: Job, delaySec: number?)
-	local d = delaySec
-	if d == nil then
-		d = withJitter(j.interval, j.jitterPct)
-	end
-	local t = math.max(MIN_DELAY, d :: number)
-	j.nextAt = now() + t
-	queueInsert(self._queue, { name = j.name, at = j.nextAt })
-	if not self._runnerAlive then
-		self:_startRunner()
-	end
-end
-
--- SỬA: Cải thiện logic runner, bỏ goto
-function Tick:_startRunner()
-	if self._runnerAlive then return end
-	self._runnerAlive = true
-
-	task.spawn(function()
-		while #self._queue > 0 do
-			local head = queuePeek(self._queue)
-			if not head then
-				-- Hàng đợi có thể bị rỗng tạm thời giữa các lần xử lý
-				task.wait()
-				continue
-			end
-
-			local tnow = now()
-			if head.at > tnow then
-				task.wait(head.at - tnow)
-				tnow = now()
-			end
-
-			local batchCount = 0
-			while #self._queue > 0 do
-				local peeked = queuePeek(self._queue)
-				if not peeked or peeked.at > (tnow + SLACK) then
-					break -- Dừng batch nếu job kế tiếp nằm ngoài khoảng SLACK
-				end
-
-				local item = queuePop(self._queue)
-				if not item then break end
-
-				local j = self._jobs[item.name]
-
-				-- Sử dụng continue thay cho goto để code sạch hơn
-				if not j or not j.enabled or math.abs(item.at - j.nextAt) > 1e-6 then
-					continue
-				end
-				
-				if j.running then
-					-- SỬA: Nếu đang chạy, bỏ qua và chờ lần kế tiếp thay vì spam lịch
-					warn("Tick: Job '"..j.name.."' is still running, skipping this execution.")
-					self:_planNext(j, j.interval) -- Lên lịch lại theo interval gốc
-					continue
-				end
-
-				j.running = true
-				local ok, ret = pcall(j.fn)
-				j.running = false
-
-				local delay: number? = nil
-				if ok and type(ret) == "number" and ret >= 0 then
-					delay = ret
-				end
-				self:_planNext(j, delay)
-
-				batchCount += 1
-				if batchCount >= MAX_BATCH then
-					task.wait()
-					tnow = now()
-					batchCount = 0
-				end
-			end
-		end
-
-		self._runnerAlive = false
-	end)
-end
-
--- (Các hàm add, enable, cancel không thay đổi)
-function Tick:add(name: string, interval: number, fn: (() -> (number|nil)), jitterPct: number?)
-	local j = self._jobs[name]
-	if j == nil then
-		j = { name = name, interval = interval, jitterPct = jitterPct or 0, running = false, enabled = true, fn = fn, nextAt = 0, version = 0, }
-		self._jobs[name] = j
-	else
-		j.interval = interval; j.jitterPct = jitterPct or j.jitterPct; j.fn = fn; j.enabled = true
-	end
-	j.version += 1
-	self:_planNext(j, withJitter(interval, j.jitterPct))
-end
-
-function Tick:enable(name: string, on: boolean)
-	local j = self._jobs[name]
-	if not j or j.enabled == on then return end
-	j.enabled = on
-	j.version += 1
-	if on then
-		self:_planNext(j, withJitter(j.interval, j.jitterPct))
-	end
-end
-
-function Tick:cancel(name: string)
-	local j = self._jobs[name]
-	if not j then return end
-	j.enabled = false
-	j.version += 1
-	self._jobs[name] = nil
-end
-
-
-return Tick
