@@ -10,9 +10,12 @@ type Job = {
 	running: boolean,
 	enabled: boolean,
 	fn: (() -> (number|nil)),
-	nextAt: number,            -- thời điểm (os.clock) chạy lần tới
+	nextAt: number,            -- thời điểm (time()) chạy lần tới
 	version: number,           -- tăng mỗi lần add/cancel/enable/disable
 }
+
+local SLACK = 1/60            -- gom các job đến hạn trong ~1 frame
+local MAX_BATCH = 8           -- tối đa số job xử lý liên tục trước khi nhường CPU
 
 local function withJitter(base: number, pct: number): number
 	if pct <= 0 then return base end
@@ -21,12 +24,13 @@ local function withJitter(base: number, pct: number): number
 end
 
 local function now(): number
-	return os.clock()
+	-- dùng wall-clock thay vì os.clock()
+	return time()
 end
 
 -- Hàng đợi (ưu tiên theo nextAt, nhỏ trước)
 local function queueInsert(q: { {name: string, at: number} }, item)
-	-- chèn giữ q luôn tăng dần theo at (n nhỏ, O(n) là đủ)
+	-- chèn giữ q luôn tăng dần theo at (O(n) đủ dùng, nếu >1k job có thể nâng cấp min-heap)
 	local i = #q + 1
 	q[i] = item
 	while i > 1 and q[i-1].at > q[i].at do
@@ -74,36 +78,51 @@ function Tick:_startRunner()
 
 	task.spawn(function()
 		while true do
-			-- thoát nếu không còn job hợp lệ nào
+			-- nếu rỗng thì tắt runner
+			if #self._queue == 0 then
+				self._runnerAlive = false
+				return
+			end
+
+			local head = queuePeek(self._queue)
+			if not head then
+				-- không có gì để làm, nhường 1 frame
+				task.wait()
+				continue
+			end
+
+			-- chờ tới hạn (wall-clock)
+			local tnow = now()
+			if head.at > tnow then
+				task.wait(head.at - tnow)
+				tnow = now() -- tính lại sau khi chờ
+			end
+
+			-- Xử lý theo batch: tất cả job đến hạn trong [tnow, tnow+SLACK]
+			local batchCount = 0
 			while #self._queue > 0 do
-				local head = queuePeek(self._queue)
-				if not head then break end
+				local peeked = queuePeek(self._queue)
+				if not peeked then break end
+				if peeked.at > (tnow + SLACK) then break end
 
-				-- Đợi đến hạn
-				local tnow = now()
-				if head.at > tnow then
-					task.wait(head.at - tnow)
-				end
-
-				-- Lấy và xác nhận
 				local item = queuePop(self._queue)
 				if not item then break end
+
 				local j = self._jobs[item.name]
 				if not j or not j.enabled then
 					-- job bị huỷ/disable, bỏ qua
-					continue
+					goto continue_batch
 				end
 
-				-- Nếu entry không còn khớp nextAt hiện tại, tức đã có lịch mới → bỏ qua
+				-- Entry không còn khớp nextAt hiện tại → bỏ qua
 				if math.abs(item.at - j.nextAt) > 1e-6 then
-					continue
+					goto continue_batch
 				end
 
-				-- Chạy job (toàn cục chỉ có 1 runner, nên global-serial)
+				-- Nếu đang running, dời nhẹ để tránh đụng
 				if j.running then
-					-- phòng thủ: nếu vì lý do gì đó đang running, dời 1 chút
-					self:_planNext(j, 0.25)
-					continue
+					self:_planNext(j, 0.025) -- dời 25ms thay vì 250ms để giảm độ trễ
+					goto continue_batch
 				end
 
 				j.running = true
@@ -114,16 +133,19 @@ function Tick:_startRunner()
 				if ok and type(ret) == "number" and ret >= 0 then
 					delay = ret
 				end
-
 				self:_planNext(j, delay)
-			end
 
-			-- nếu hàng đợi rỗng, tắt runner
-			if #self._queue == 0 then
-				self._runnerAlive = false
-				return
+				batchCount += 1
+				if batchCount >= MAX_BATCH then
+					-- Nhường CPU sau khi xử lý một mẻ
+					task.wait()
+					tnow = now()
+					batchCount = 0
+				end
+
+				::continue_batch::
 			end
-task.wait(60)
+			-- vòng while true sẽ lặp lại; nếu còn việc, nó lại tính head và đợi tới hạn mới
 		end
 	end)
 end
