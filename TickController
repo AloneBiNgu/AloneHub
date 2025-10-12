@@ -15,7 +15,7 @@ type Job = {
 }
 
 -- Các thông số tinh chỉnh hiệu năng
-local SLACK = 1/30            -- SỬA: Gom các job trong ~2 frame (33ms), hợp lý hơn
+local SLACK = 1/5            -- SỬA: Gom các job trong ~2 frame (33ms), hợp lý hơn
 local MAX_BATCH = 8
 local MIN_DELAY = 0.05
 
