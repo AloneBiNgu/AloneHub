@@ -1,4 +1,3 @@
--- Tick.lua (Đã sửa lỗi)
 --!strict
 local Tick = {}
 Tick.__index = Tick
@@ -10,106 +9,154 @@ type Job = {
 	running: boolean,
 	enabled: boolean,
 	fn: (() -> (number|nil)),
-	nextAt: number,            -- SỬA: Dùng os.clock()
+	nextAt: number,
 	version: number,
 }
 
--- Các thông số tinh chỉnh hiệu năng
-local SLACK = 1/5            -- SỬA: Gom các job trong ~2 frame (33ms), hợp lý hơn
-local MAX_BATCH = 8
-local MIN_DELAY = 0.05
+-- Tối ưu: Giảm SLACK xuống 1 frame để giảm overhead
+local SLACK = 1/60           -- ~16ms, chính xác hơn
+local MAX_BATCH = 12         -- Tăng batch size
+local MIN_DELAY = 1/60       -- Align với frame rate
 
+-- Cache math functions
+local math_max = math.max
+local math_random = math.random
+local math_abs = math.abs
+local table_remove = table.remove
+
+-- Tối ưu: Pre-calculate để tránh tính lại
 local function withJitter(base: number, pct: number): number
 	if pct <= 0 then return base end
 	local d = base * pct
-	return math.max(MIN_DELAY, base + (math.random() * 2 * d - d))
+	local jitter = math_random() * 2 * d - d
+	return math_max(MIN_DELAY, base + jitter)
 end
 
 local function now(): number
-	-- SỬA: Luôn dùng os.clock() để đồng bộ với task.wait()
 	return os.clock()
 end
 
--- (Các hàm queue... không thay đổi)
-local function queueInsert(q: { {name: string, at: number} }, item)
-	local i = #q + 1
-	q[i] = item
-	while i > 1 and q[i-1].at > q[i].at do
-		q[i-1], q[i] = q[i], q[i-1]
-		i -= 1
+-- Tối ưu: Binary heap thay vì insertion sort (O(log n) vs O(n))
+local function heapInsert(q: {{name: string, at: number}}, item)
+	local n = #q + 1
+	q[n] = item
+	
+	-- Bubble up
+	while n > 1 do
+		local parent = math.floor(n / 2)
+		if q[parent].at <= q[n].at then break end
+		q[parent], q[n] = q[n], q[parent]
+		n = parent
 	end
 end
-local function queuePeek(q) return q[1] end
-local function queuePop(q)
-	if #q == 0 then return nil end
-	local it = q[1]
-	table.remove(q, 1)
-	return it
+
+local function heapPeek(q)
+	return q[1]
 end
 
+local function heapPop(q)
+	local len = #q
+	if len == 0 then return nil end
+	
+	local root = q[1]
+	q[1] = q[len]
+	q[len] = nil
+	len -= 1
+	
+	if len == 0 then return root end
+	
+	-- Bubble down
+	local i = 1
+	while true do
+		local left = i * 2
+		local right = left + 1
+		local smallest = i
+		
+		if left <= len and q[left].at < q[smallest].at then
+			smallest = left
+		end
+		if right <= len and q[right].at < q[smallest].at then
+			smallest = right
+		end
+		
+		if smallest == i then break end
+		
+		q[i], q[smallest] = q[smallest], q[i]
+		i = smallest
+	end
+	
+	return root
+end
 
 function Tick.new()
 	local self = setmetatable({}, Tick)
 	self._jobs = {} :: {[string]: Job}
-	self._queue = {} :: { {name: string, at: number} }
+	self._queue = {} :: {{name: string, at: number}}
 	self._runnerAlive = false
 	return self
 end
 
 function Tick:_planNext(j: Job, delaySec: number?)
-	local d = delaySec
-	if d == nil then
-		d = withJitter(j.interval, j.jitterPct)
-	end
-	local t = math.max(MIN_DELAY, d :: number)
+	local d = delaySec or withJitter(j.interval, j.jitterPct)
+	local t = math_max(MIN_DELAY, d)
 	j.nextAt = now() + t
-	queueInsert(self._queue, { name = j.name, at = j.nextAt })
+	heapInsert(self._queue, {name = j.name, at = j.nextAt})
+	
 	if not self._runnerAlive then
 		self:_startRunner()
 	end
 end
 
--- SỬA: Cải thiện logic runner, bỏ goto
+-- Tối ưu: Giảm số lần gọi now(), tối ưu batch processing
 function Tick:_startRunner()
 	if self._runnerAlive then return end
 	self._runnerAlive = true
 
 	task.spawn(function()
 		while #self._queue > 0 do
-			local head = queuePeek(self._queue)
+			local head = heapPeek(self._queue)
 			if not head then
-				-- Hàng đợi có thể bị rỗng tạm thời giữa các lần xử lý
 				task.wait()
 				continue
 			end
 
 			local tnow = now()
-			if head.at > tnow then
-				task.wait(head.at - tnow)
+			local waitTime = head.at - tnow
+			
+			-- Tối ưu: Chỉ wait nếu cần thiết
+			if waitTime > SLACK then
+				task.wait(waitTime)
 				tnow = now()
 			end
 
 			local batchCount = 0
+			local slackBoundary = tnow + SLACK
+			
+			-- Tối ưu: Process tất cả jobs trong SLACK window
 			while #self._queue > 0 do
-				local peeked = queuePeek(self._queue)
-				if not peeked or peeked.at > (tnow + SLACK) then
-					break -- Dừng batch nếu job kế tiếp nằm ngoài khoảng SLACK
+				local peeked = heapPeek(self._queue)
+				if not peeked or peeked.at > slackBoundary then
+					break
 				end
 
-				local item = queuePop(self._queue)
+				local item = heapPop(self._queue)
 				if not item then break end
 
 				local j = self._jobs[item.name]
 
-				-- Sử dụng continue thay cho goto để code sạch hơn
-				if not j or not j.enabled or math.abs(item.at - j.nextAt) > 1e-6 then
+				-- Early exit conditions
+				if not j or not j.enabled then
+					continue
+				end
+				
+				-- Tối ưu: Dùng epsilon comparison thay vì math.abs
+				if item.at ~= j.nextAt and math_abs(item.at - j.nextAt) > 1e-6 then
 					continue
 				end
 				
 				if j.running then
-					-- SỬA: Nếu đang chạy, bỏ qua và chờ lần kế tiếp thay vì spam lịch
-					warn("Tick: Job '"..j.name.."' is still running, skipping this execution.")
-					self:_planNext(j, j.interval) -- Lên lịch lại theo interval gốc
+					-- Skip và schedule lại
+					self:_planNext(j, j.interval)
 					continue
 				end
 
@@ -117,18 +164,27 @@ function Tick:_startRunner()
 				local ok, ret = pcall(j.fn)
 				j.running = false
 
-				local delay: number? = nil
+				-- Tối ưu: Inline logic
 				if ok and type(ret) == "number" and ret >= 0 then
-					delay = ret
+					self:_planNext(j, ret)
+				else
+					self:_planNext(j, nil)
 				end
-				self:_planNext(j, delay)
 
 				batchCount += 1
+				
+				-- Tối ưu: Yield less frequently
 				if batchCount >= MAX_BATCH then
 					task.wait()
 					tnow = now()
+					slackBoundary = tnow + SLACK
 					batchCount = 0
 				end
+			end
+			
+			-- Tối ưu: Micro-yield nếu còn jobs
+			if #self._queue > 0 then
+				task.wait()
 			end
 		end
 
@@ -136,15 +192,28 @@ function Tick:_startRunner()
 	end)
 end
 
--- (Các hàm add, enable, cancel không thay đổi)
 function Tick:add(name: string, interval: number, fn: (() -> (number|nil)), jitterPct: number?)
 	local j = self._jobs[name]
+	
 	if j == nil then
-		j = { name = name, interval = interval, jitterPct = jitterPct or 0, running = false, enabled = true, fn = fn, nextAt = 0, version = 0, }
+		j = {
+			name = name,
+			interval = interval,
+			jitterPct = jitterPct or 0,
+			running = false,
+			enabled = true,
+			fn = fn,
+			nextAt = 0,
+			version = 0,
+		}
 		self._jobs[name] = j
 	else
-		j.interval = interval; j.jitterPct = jitterPct or j.jitterPct; j.fn = fn; j.enabled = true
+		j.interval = interval
+		j.jitterPct = jitterPct or j.jitterPct
+		j.fn = fn
+		j.enabled = true
 	end
+	
 	j.version += 1
 	self:_planNext(j, withJitter(interval, j.jitterPct))
 end
@@ -152,8 +221,10 @@ end
 function Tick:enable(name: string, on: boolean)
 	local j = self._jobs[name]
 	if not j or j.enabled == on then return end
+	
 	j.enabled = on
 	j.version += 1
+	
 	if on then
 		self:_planNext(j, withJitter(j.interval, j.jitterPct))
 	end
@@ -162,10 +233,10 @@ end
 function Tick:cancel(name: string)
 	local j = self._jobs[name]
 	if not j then return end
+	
 	j.enabled = false
 	j.version += 1
 	self._jobs[name] = nil
 end
-
 
 return Tick
