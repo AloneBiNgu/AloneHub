@@ -1,23 +1,23 @@
--- Tick.lua
+-- Tick.lua (Đã sửa lỗi)
 --!strict
 local Tick = {}
 Tick.__index = Tick
 
 type Job = {
 	name: string,
-	interval: number,          -- giây
-	jitterPct: number,         -- vd: 0.2 => ±20%
+	interval: number,
+	jitterPct: number,
 	running: boolean,
 	enabled: boolean,
 	fn: (() -> (number|nil)),
-	nextAt: number,            -- thời điểm (time()) chạy lần tới
-	version: number,           -- tăng mỗi lần add/cancel/enable/disable
+	nextAt: number,            -- SỬA: Dùng os.clock()
+	version: number,
 }
 
 -- Các thông số tinh chỉnh hiệu năng
-local SLACK = 1/5           -- gom các job đến hạn trong ~1 frame
-local MAX_BATCH = 8           -- số job tối đa xử lý liên tiếp trước khi nhường CPU
-local MIN_DELAY = 0.05        -- đảm bảo không lập lịch quá dày
+local SLACK = 1/30            -- SỬA: Gom các job trong ~2 frame (33ms), hợp lý hơn
+local MAX_BATCH = 8
+local MIN_DELAY = 0.05
 
 local function withJitter(base: number, pct: number): number
 	if pct <= 0 then return base end
@@ -26,13 +26,12 @@ local function withJitter(base: number, pct: number): number
 end
 
 local function now(): number
-	-- dùng wall-clock thay vì os.clock() để chờ chính xác
-	return time()
+	-- SỬA: Luôn dùng os.clock() để đồng bộ với task.wait()
+	return os.clock()
 end
 
--- Hàng đợi (ưu tiên theo nextAt, nhỏ trước)
+-- (Các hàm queue... không thay đổi)
 local function queueInsert(q: { {name: string, at: number} }, item)
-	-- chèn giữ q luôn tăng dần theo at (n nhỏ, O(n) là đủ)
 	local i = #q + 1
 	q[i] = item
 	while i > 1 and q[i-1].at > q[i].at do
@@ -40,7 +39,6 @@ local function queueInsert(q: { {name: string, at: number} }, item)
 		i -= 1
 	end
 end
-
 local function queuePeek(q) return q[1] end
 local function queuePop(q)
 	if #q == 0 then return nil end
@@ -48,6 +46,7 @@ local function queuePop(q)
 	table.remove(q, 1)
 	return it
 end
+
 
 function Tick.new()
 	local self = setmetatable({}, Tick)
@@ -57,7 +56,6 @@ function Tick.new()
 	return self
 end
 
--- nội bộ: lên lịch lần kế cho 1 job
 function Tick:_planNext(j: Job, delaySec: number?)
 	local d = delaySec
 	if d == nil then
@@ -65,66 +63,54 @@ function Tick:_planNext(j: Job, delaySec: number?)
 	end
 	local t = math.max(MIN_DELAY, d :: number)
 	j.nextAt = now() + t
-	-- Đưa vào queue (runner sẽ tự bỏ qua entry cũ nếu không khớp)
 	queueInsert(self._queue, { name = j.name, at = j.nextAt })
-	-- đảm bảo runner chạy
 	if not self._runnerAlive then
 		self:_startRunner()
 	end
 end
 
--- nội bộ: runner toàn cục chạy tuần tự
+-- SỬA: Cải thiện logic runner, bỏ goto
 function Tick:_startRunner()
 	if self._runnerAlive then return end
 	self._runnerAlive = true
 
 	task.spawn(function()
-		while true do
-			-- nếu hàng đợi rỗng, tắt runner
-			if #self._queue == 0 then
-				self._runnerAlive = false
-				return
-			end
-
+		while #self._queue > 0 do
 			local head = queuePeek(self._queue)
 			if not head then
+				-- Hàng đợi có thể bị rỗng tạm thời giữa các lần xử lý
 				task.wait()
 				continue
 			end
 
-			-- Đợi đến hạn
 			local tnow = now()
 			if head.at > tnow then
 				task.wait(head.at - tnow)
-				tnow = now() -- tính lại sau khi đợi
+				tnow = now()
 			end
 
-			-- Xử lý batch: mọi job đến hạn trong [tnow, tnow + SLACK]
 			local batchCount = 0
 			while #self._queue > 0 do
 				local peeked = queuePeek(self._queue)
 				if not peeked or peeked.at > (tnow + SLACK) then
-					break
+					break -- Dừng batch nếu job kế tiếp nằm ngoài khoảng SLACK
 				end
 
 				local item = queuePop(self._queue)
 				if not item then break end
 
 				local j = self._jobs[item.name]
-				if not j or not j.enabled then
-					-- job bị huỷ/disable, bỏ qua
-					goto continue_batch
-				end
 
-				-- Nếu entry không còn khớp nextAt hiện tại, tức đã có lịch mới → bỏ qua
-				if math.abs(item.at - j.nextAt) > 1e-6 then
-					goto continue_batch
+				-- Sử dụng continue thay cho goto để code sạch hơn
+				if not j or not j.enabled or math.abs(item.at - j.nextAt) > 1e-6 then
+					continue
 				end
-
-				-- Nếu đang chạy, dời ngắn để tránh đụng mà không spam CPU
+				
 				if j.running then
-					self:_planNext(j, 0.02) -- 20ms
-					goto continue_batch
+					-- SỬA: Nếu đang chạy, bỏ qua và chờ lần kế tiếp thay vì spam lịch
+					warn("Tick: Job '"..j.name.."' is still running, skipping this execution.")
+					self:_planNext(j, j.interval) -- Lên lịch lại theo interval gốc
+					continue
 				end
 
 				j.running = true
@@ -139,39 +125,25 @@ function Tick:_startRunner()
 
 				batchCount += 1
 				if batchCount >= MAX_BATCH then
-					-- Nhường CPU sau mỗi mẻ xử lý
 					task.wait()
 					tnow = now()
 					batchCount = 0
 				end
-
-				::continue_batch::
 			end
-			-- Lặp lại: nếu còn việc, vòng trên sẽ đợi tới hạn mới
 		end
+
+		self._runnerAlive = false
 	end)
 end
 
+-- (Các hàm add, enable, cancel không thay đổi)
 function Tick:add(name: string, interval: number, fn: (() -> (number|nil)), jitterPct: number?)
 	local j = self._jobs[name]
 	if j == nil then
-		j = {
-			name = name,
-			interval = interval,
-			jitterPct = jitterPct or 0,
-			running = false,
-			enabled = true,
-			fn = fn,
-			nextAt = 0,
-			version = 0,
-		}
+		j = { name = name, interval = interval, jitterPct = jitterPct or 0, running = false, enabled = true, fn = fn, nextAt = 0, version = 0, }
 		self._jobs[name] = j
 	else
-		-- cập nhật lại cấu hình nếu add trùng tên
-		j.interval = interval
-		j.jitterPct = jitterPct or j.jitterPct
-		j.fn = fn
-		j.enabled = true
+		j.interval = interval; j.jitterPct = jitterPct or j.jitterPct; j.fn = fn; j.enabled = true
 	end
 	j.version += 1
 	self:_planNext(j, withJitter(interval, j.jitterPct))
@@ -179,8 +151,7 @@ end
 
 function Tick:enable(name: string, on: boolean)
 	local j = self._jobs[name]
-	if not j then return end
-	if j.enabled == on then return end
+	if not j or j.enabled == on then return end
 	j.enabled = on
 	j.version += 1
 	if on then
@@ -194,7 +165,7 @@ function Tick:cancel(name: string)
 	j.enabled = false
 	j.version += 1
 	self._jobs[name] = nil
-	-- Không cần dọn queue ngay: runner tự bỏ qua entry “mồ côi”
 end
+
 
 return Tick
